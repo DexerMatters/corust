@@ -1,180 +1,118 @@
+//! # Corust - Type-Based Enum Pattern Matching
+//!
+//! This crate provides procedural macros for converting enums into trait objects
+//! and performing type-based pattern matching on them.
+//!
+//! ## Features
+//!
+//! - `make_type_enum!`: Function-like macro for converting enums to traits
+//! - `match_t`: Pattern match on trait objects (&dyn Trait or Box<dyn Trait>)
+//! - Smart generic type parameter filtering (only includes used type params)
+//!
+//! ## Example
+//!
+//! ```ignore
+//! make_type_enum! {
+//!     pub enum Shape {
+//!         Circle { radius: f64 },
+//!         Rectangle { width: f64, height: f64 },
+//!     }
+//! }
+//! ```
+
+mod codegen;
+mod enum_parser;
+mod helpers;
+mod pattern_parser;
+mod type_analysis;
+mod variant_gen;
+
 use proc_macro::TokenStream;
-use proc_macro2::{TokenStream as TokenStream2, TokenTree};
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, parse_macro_input};
+use std::collections::HashSet;
 
-#[proc_macro_attribute]
-pub fn type_enum(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as DeriveInput);
+use codegen::apply_type_hint_to_pattern;
+use enum_parser::ParsedEnum;
+use helpers::{add_static_bounds, collect_ordered_type_params};
+use pattern_parser::{extract_generics_from_type_hint, extract_type_and_pattern, parse_match_t};
+use variant_gen::generate_variant_code;
 
-    let enum_name = &input.ident;
-    let vis = &input.vis;
-    let generics = &input.generics;
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+//=============================================================================
+// Main Macro Implementation
+//=============================================================================
 
-    // Extract enum variants
-    let variants = match &input.data {
-        Data::Enum(data_enum) => &data_enum.variants,
-        _ => {
-            return syn::Error::new_spanned(&input.ident, "type_enum can only be used on enums")
-                .to_compile_error()
-                .into();
+/// Function-like macro for converting enums to traits with struct variants.
+///
+/// ```ignore
+/// make_type_enum! {
+///     pub enum Either<A, E> {
+///         Right(A),
+///         Left(E),
+///     }
+/// }
+/// ```
+#[proc_macro]
+pub fn make_type_enum(input: TokenStream) -> TokenStream {
+    let parsed = match syn::parse::<ParsedEnum>(input) {
+        Ok(p) => p,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    let enum_name = &parsed.ident;
+    let vis = &parsed.vis;
+    let generics = &parsed.generics;
+
+    // Collect type parameters
+    let all_type_params_ordered = collect_ordered_type_params(generics);
+    let all_type_params: HashSet<String> = all_type_params_ordered.iter().cloned().collect();
+
+    // Add 'static bounds
+    let generics_with_static = add_static_bounds(generics);
+    let (_impl_generics_static, _, where_clause_static) = generics_with_static.split_for_impl();
+
+    // Generate code for each variant
+    let structs_and_impls: Vec<_> = parsed
+        .variants
+        .iter()
+        .map(|variant| {
+            generate_variant_code(
+                variant,
+                &parsed.methods,
+                &generics_with_static,
+                &all_type_params,
+                &all_type_params_ordered,
+                vis,
+                enum_name,
+            )
+        })
+        .collect();
+
+    // Generate the trait with method declarations if present
+    let trait_def = if !parsed.methods.is_empty() {
+        let method_sigs: Vec<_> = parsed.methods.iter().map(|m| &m.sig).collect();
+        quote! {
+            #vis trait #enum_name #generics_with_static: std::any::Any #where_clause_static {
+                #(#method_sigs;)*
+            }
+        }
+    } else {
+        quote! {
+            #vis trait #enum_name #generics_with_static: std::any::Any #where_clause_static {}
         }
     };
 
-    // Generate structs and impls for each variant
-    let structs_and_impls = variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-        let variant_vis = vis; // Use same visibility as enum
-
-        match &variant.fields {
-            Fields::Named(fields) => {
-                quote! {
-                    #variant_vis struct #variant_name #fields
-                    impl #impl_generics #enum_name #ty_generics for #variant_name #where_clause {}
-                }
-            }
-            Fields::Unnamed(fields) => {
-                quote! {
-                    #variant_vis struct #variant_name #fields;
-                    impl #impl_generics #enum_name #ty_generics for #variant_name #where_clause {}
-                }
-            }
-            Fields::Unit => {
-                quote! {
-                    #variant_vis struct #variant_name;
-                    impl #impl_generics #enum_name #ty_generics for #variant_name #where_clause {}
-                }
-            }
-        }
-    });
-
-    // Generate the trait
     let expanded = quote! {
-        #vis trait #enum_name #generics : std::any::Any #where_clause {}
-
+        #trait_def
         #(#structs_and_impls)*
     };
 
     TokenStream::from(expanded)
 }
 
-// Simpler approach: parse as token streams
-struct MatchArm {
-    pattern: TokenStream2,
-    body: TokenStream2,
-}
+//=============================================================================
+// Pattern Matching Macros
+//=============================================================================
 
-struct MatchTInput {
-    is_move: bool,
-    expr: TokenStream2,
-    arms: Vec<MatchArm>,
-}
-
-fn parse_match_t(input: TokenStream) -> syn::Result<MatchTInput> {
-    use proc_macro2::{Delimiter, TokenTree};
-
-    let tokens = TokenStream2::from(input);
-    let mut iter = tokens.into_iter().peekable();
-
-    // Check for optional 'move' keyword
-    let is_move = if let Some(TokenTree::Ident(ident)) = iter.peek() {
-        if ident.to_string() == "move" {
-            iter.next(); // consume 'move'
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    // Parse the expression (everything before the first brace)
-    let mut expr_tokens = Vec::new();
-    while let Some(token) = iter.peek() {
-        if matches!(token, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace) {
-            break;
-        }
-        expr_tokens.push(iter.next().unwrap());
-    }
-    let expr: TokenStream2 = expr_tokens.into_iter().collect();
-
-    // Parse the brace group containing arms
-    let arms_group = match iter.next() {
-        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g,
-        _ => {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Expected braced block with match arms",
-            ));
-        }
-    };
-
-    // Parse arms from the group
-    let arms_tokens = arms_group.stream();
-    let mut arms = Vec::new();
-    let mut current_pattern = Vec::new();
-    let mut current_body = Vec::new();
-    let mut in_body = false;
-
-    for token in arms_tokens {
-        match &token {
-            TokenTree::Punct(p) if p.as_char() == '=' && !in_body => {
-                // This might be part of =>
-                current_pattern.push(token.clone());
-            }
-            TokenTree::Punct(p) if p.as_char() == '>' && !current_pattern.is_empty() => {
-                // Check if previous was =
-                if let Some(TokenTree::Punct(prev)) = current_pattern.last() {
-                    if prev.as_char() == '=' {
-                        // Remove the = from pattern
-                        current_pattern.pop();
-                        in_body = true;
-                        continue;
-                    }
-                }
-                current_pattern.push(token);
-            }
-            TokenTree::Punct(p) if p.as_char() == ',' && in_body => {
-                // End of arm
-                arms.push(MatchArm {
-                    pattern: current_pattern.clone().into_iter().collect(),
-                    body: current_body.clone().into_iter().collect(),
-                });
-                current_pattern.clear();
-                current_body.clear();
-                in_body = false;
-            }
-            _ => {
-                if in_body {
-                    current_body.push(token);
-                } else {
-                    current_pattern.push(token);
-                }
-            }
-        }
-    }
-
-    // Don't forget the last arm
-    if !current_pattern.is_empty() || !current_body.is_empty() {
-        arms.push(MatchArm {
-            pattern: current_pattern.into_iter().collect(),
-            body: current_body.into_iter().collect(),
-        });
-    }
-
-    Ok(MatchTInput {
-        is_move,
-        expr,
-        arms,
-    })
-}
-
-/// A macro for type-based pattern matching on trait objects
-///
-/// Syntax:
-/// - `match_t!(expr { Pattern1(fields) => expr1, ... })` for `&dyn Trait` (uses references)
-/// - `match_t!(move expr { Pattern1(fields) => expr1, ... })` for `Box<dyn Trait>` (moves values)
 #[proc_macro]
 pub fn match_t(input: TokenStream) -> TokenStream {
     let input_parsed = match parse_match_t(input) {
@@ -184,17 +122,19 @@ pub fn match_t(input: TokenStream) -> TokenStream {
 
     let expr = &input_parsed.expr;
     let is_move = input_parsed.is_move;
+    let type_hint = &input_parsed.type_hint;
+
+    // Extract generics from type hint if provided
+    let hint_generics = type_hint
+        .as_ref()
+        .and_then(|hint| extract_generics_from_type_hint(hint));
 
     if is_move {
         // Move semantics for Box<dyn Trait>
         let type_checks = input_parsed.arms.iter().enumerate().map(|(idx, arm)| {
             let pattern = &arm.pattern;
-
-            let type_name: TokenStream2 = pattern
-                .clone()
-                .into_iter()
-                .take_while(|t| !matches!(t, TokenTree::Group(_) | TokenTree::Punct(_)))
-                .collect();
+            let (type_name, _) = extract_type_and_pattern(pattern);
+            let type_name = apply_type_hint_to_pattern(type_name, &hint_generics);
 
             quote! {
                 if (&*__expr as &dyn std::any::Any).is::<#type_name>() {
@@ -206,19 +146,15 @@ pub fn match_t(input: TokenStream) -> TokenStream {
         let match_arms = input_parsed.arms.iter().enumerate().map(|(idx, arm)| {
             let pattern = &arm.pattern;
             let body = &arm.body;
-
-            let type_name: TokenStream2 = pattern
-                .clone()
-                .into_iter()
-                .take_while(|t| !matches!(t, TokenTree::Group(_) | TokenTree::Punct(_)))
-                .collect();
+            let (type_name, pattern_for_match) = extract_type_and_pattern(pattern);
+            let type_name = apply_type_hint_to_pattern(type_name, &hint_generics);
 
             quote! {
                 #idx => {
                     let __any_box: Box<dyn std::any::Any> = __expr;
                     if let Ok(__concrete_box) = __any_box.downcast::<#type_name>() {
                         match *__concrete_box {
-                            #pattern => #body,
+                            #pattern_for_match => #body,
                             _ => panic!("Pattern match failed in match_t!")
                         }
                     } else {
@@ -253,16 +189,12 @@ pub fn match_t(input: TokenStream) -> TokenStream {
         let match_arms = input_parsed.arms.iter().map(|arm| {
             let pattern = &arm.pattern;
             let body = &arm.body;
-
-            let type_name: TokenStream2 = pattern
-                .clone()
-                .into_iter()
-                .take_while(|t| !matches!(t, TokenTree::Group(_) | TokenTree::Punct(_)))
-                .collect();
+            let (type_name, pattern_for_match) = extract_type_and_pattern(pattern);
+            let type_name = apply_type_hint_to_pattern(type_name, &hint_generics);
 
             quote! {
                 if let Some(__value_ref) = (&*__expr as &dyn std::any::Any).downcast_ref::<#type_name>() {
-                    if let #pattern = __value_ref {
+                    if let #pattern_for_match = __value_ref {
                         return Some(#body);
                     }
                 }
@@ -301,11 +233,7 @@ pub fn match_t_box(input: TokenStream) -> TokenStream {
     let type_checks = input_parsed.arms.iter().enumerate().map(|(idx, arm)| {
         let pattern = &arm.pattern;
 
-        let type_name: TokenStream2 = pattern
-            .clone()
-            .into_iter()
-            .take_while(|t| !matches!(t, TokenTree::Group(_) | TokenTree::Punct(_)))
-            .collect();
+        let (type_name, _) = extract_type_and_pattern(pattern);
 
         quote! {
             if (&*__expr as &dyn std::any::Any).is::<#type_name>() {
@@ -319,18 +247,14 @@ pub fn match_t_box(input: TokenStream) -> TokenStream {
         let pattern = &arm.pattern;
         let body = &arm.body;
 
-        let type_name: TokenStream2 = pattern
-            .clone()
-            .into_iter()
-            .take_while(|t| !matches!(t, TokenTree::Group(_) | TokenTree::Punct(_)))
-            .collect();
+        let (type_name, pattern_for_match) = extract_type_and_pattern(pattern);
 
         quote! {
             #idx => {
                 let __any_box: Box<dyn std::any::Any> = __expr;
                 if let Ok(__concrete_box) = __any_box.downcast::<#type_name>() {
                     let __value = *__concrete_box;
-                    if let #pattern = __value {
+                    if let #pattern_for_match = __value {
                         #body
                     } else {
                         panic!("Pattern match failed in match_t_box!");
