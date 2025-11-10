@@ -1,6 +1,6 @@
-use corust::{make_type_enum, match_t};
+use corust::{match_t, type_enum};
 
-make_type_enum! {
+type_enum! {
     pub enum Shape {
         Circle(f64): Shape,
         Rectangle(f64, f64): Shape,
@@ -32,7 +32,7 @@ fn test_enum_to_trait() {
 #[test]
 fn test_move_non_copy_types() {
     // Test with a non-Copy type to prove we're moving, not copying
-    make_type_enum! {
+    type_enum! {
         pub enum Data {
             Text(String): Data,
             Numbers(Vec<i32>): Data,
@@ -59,7 +59,7 @@ fn test_move_non_copy_types() {
 
 #[test]
 fn test_enum_generics() {
-    make_type_enum! {
+    type_enum! {
         pub enum Either<A, E> {
             Right(A),
             Left(E),
@@ -85,7 +85,7 @@ fn test_enum_generics() {
 
 #[test]
 fn test_visibility_modifiers() {
-    make_type_enum! {
+    type_enum! {
         pub enum Message {
             Text { content: String, sender: String }: Message,
             Info(String): Message,
@@ -107,7 +107,7 @@ fn test_visibility_modifiers() {
     assert_eq!(result, "Alice: Hello");
 }
 
-make_type_enum! {
+type_enum! {
     pub enum Term<T: Clone> {
         Lift(T): Term<T>,
         Boolean(bool): Term<bool>,
@@ -136,7 +136,7 @@ fn test_tagless_final() {
     println!("Result: {}", expr.eval());
 }
 
-make_type_enum! {
+type_enum! {
     pub enum Pair<A, B> {
         MkPair(A, B): Pair<A, B>,
         InvertedPair(B, A): Pair<B, A>,
@@ -180,7 +180,7 @@ fn test_multiple_generic_params() {
 
 #[test]
 fn test_boxed_self_method() {
-    make_type_enum! {
+    type_enum! {
         pub enum Container {
             Value(String),
             Wrapper(Box<String>),

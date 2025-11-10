@@ -5,14 +5,14 @@
 //!
 //! ## Features
 //!
-//! - `make_type_enum!`: Function-like macro for converting enums to traits
+//! - `type_enum!`: Function-like macro for converting enums to traits
 //! - `match_t`: Pattern match on trait objects (&dyn Trait or Box<dyn Trait>)
 //! - Smart generic type parameter filtering (only includes used type params)
 //!
 //! ## Example
 //!
 //! ```ignore
-//! make_type_enum! {
+//! type_enum! {
 //!     pub enum Shape {
 //!         Circle { radius: f64 },
 //!         Rectangle { width: f64, height: f64 },
@@ -44,7 +44,7 @@ use variant_gen::generate_variant_code;
 /// Function-like macro for converting enums to traits with struct variants.
 ///
 /// ```ignore
-/// make_type_enum! {
+/// type_enum! {
 ///     pub enum Either<A, E> {
 ///         Right(A),
 ///         Left(E),
@@ -52,7 +52,7 @@ use variant_gen::generate_variant_code;
 /// }
 /// ```
 #[proc_macro]
-pub fn make_type_enum(input: TokenStream) -> TokenStream {
+pub fn type_enum(input: TokenStream) -> TokenStream {
     let parsed = match syn::parse::<ParsedEnum>(input) {
         Ok(p) => p,
         Err(e) => return e.to_compile_error().into(),
