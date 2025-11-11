@@ -83,22 +83,18 @@ pub fn generate_method_body(
         return None;
     }
 
-    // For now, take the first matching arm (we can enhance this later)
     let arm = matching_arms[0];
     let body = &arm.body;
     let pattern_raw = &arm.pattern;
     let cleaned_pattern = strip_pattern_generics(pattern_raw);
 
-    // Substitute type parameters based on trait type
     let sig_str = method.sig.to_string();
     let new_sig_str = substitute_type_params(&sig_str, trait_type, all_type_params_ordered);
     let new_sig: TokenStream2 = new_sig_str.parse().unwrap_or_else(|_| method.sig.clone());
 
-    // Check if the signature uses `self: Box<Self>` for consuming the box
     let is_boxed_self =
         sig_str.contains("self : Box < Self >") || sig_str.contains("self: Box<Self>");
 
-    // Generate appropriate match expression
     let match_expr = if is_boxed_self {
         quote! {
             let __concrete_box = (self as Box<dyn std::any::Any>)
@@ -131,7 +127,7 @@ pub fn generate_method_body(
 pub fn generate_combined_trait_impl(
     variant: &ParsedVariant,
     methods: &[ParsedMethod],
-    impl_generics: &TokenStream2,
+    generics_with_static: &Generics,
     variant_ty_generics: &TokenStream2,
     where_clause: &TokenStream2,
     trait_type: &TokenStream2,
@@ -143,14 +139,38 @@ pub fn generate_combined_trait_impl(
     // Extract which type params are used in the trait type
     let trait_type_params = extract_type_params_from_trait(trait_type, all_type_params);
 
-    // Build impl generics with only the type params used in trait type
-    let filtered_impl_generics = if trait_type_params.is_empty() {
+    // Also extract which type params are used in the variant's type generics (struct params)
+    let variant_type_params = extract_type_params_from_trait(variant_ty_generics, all_type_params);
+
+    // Combine both sets - impl needs params used in EITHER the trait type OR the variant type
+    let mut used_params = trait_type_params;
+    used_params.extend(variant_type_params);
+
+    // Build filtered impl generics with only the type params actually used
+    let filtered_impl_generics = if used_params.is_empty() {
         quote! {}
     } else {
-        impl_generics.clone()
+        // Build new generics with only used params, preserving their bounds
+        let params: Vec<_> = generics_with_static
+            .type_params()
+            .filter(|tp| {
+                let param_name = tp.ident.to_string();
+                used_params.contains(&param_name)
+            })
+            .map(|tp| {
+                let ident = &tp.ident;
+                let bounds = &tp.bounds;
+                quote! { #ident: #bounds }
+            })
+            .collect();
+
+        if params.is_empty() {
+            quote! {}
+        } else {
+            quote! { <#(#params),*> }
+        }
     };
 
-    // Generate method implementations for all methods
     let method_impls: Vec<_> = methods
         .iter()
         .filter_map(|method| {
@@ -166,13 +186,11 @@ pub fn generate_combined_trait_impl(
         .collect();
 
     if method_impls.is_empty() {
-        // No methods for this variant - empty impl
         quote! {
             impl #filtered_impl_generics #trait_type
                 for #variant_name #variant_ty_generics #where_clause {}
         }
     } else {
-        // Impl with all methods
         quote! {
             impl #filtered_impl_generics #trait_type
                 for #variant_name #variant_ty_generics #where_clause {
@@ -206,13 +224,13 @@ pub fn generate_variant_code(
     let struct_def = generate_variant_struct(variant_name, &variant_generics, &variant.fields, vis);
 
     // Generate trait implementation (uses full generics from enum)
-    let (impl_generics_static, _, where_clause_static) = generics_with_static.split_for_impl();
+    let (_impl_generics_static, _, where_clause_static) = generics_with_static.split_for_impl();
     let trait_impl = if let Some(ref trait_type) = variant.trait_type {
         // Generate combined trait impl with all methods
         generate_combined_trait_impl(
             variant,
             methods,
-            &impl_generics_static.to_token_stream(),
+            generics_with_static,
             &variant_ty_generics.to_token_stream(),
             &where_clause_static.to_token_stream(),
             trait_type,
@@ -224,7 +242,7 @@ pub fn generate_variant_code(
         generate_combined_trait_impl(
             variant,
             methods,
-            &impl_generics_static.to_token_stream(),
+            generics_with_static,
             &variant_ty_generics.to_token_stream(),
             &where_clause_static.to_token_stream(),
             &trait_type,
@@ -238,7 +256,7 @@ pub fn generate_variant_code(
         generate_combined_trait_impl(
             variant,
             methods,
-            &impl_generics_static.to_token_stream(),
+            generics_with_static,
             &variant_ty_generics.to_token_stream(),
             &where_clause_static.to_token_stream(),
             &default_trait_type,

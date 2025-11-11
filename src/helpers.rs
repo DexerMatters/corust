@@ -98,8 +98,6 @@ pub fn substitute_type_params(
     for (i, enum_param) in enum_params.iter().enumerate() {
         if i < trait_type_args.len() {
             let placeholder = format!("__PLACEHOLDER_{}__", i);
-
-            // Replace type parameter in various contexts
             result = result
                 .replace(&format!("& {}", enum_param), &format!("&{}", placeholder))
                 .replace(&format!("&{}", enum_param), &format!("&{}", placeholder))

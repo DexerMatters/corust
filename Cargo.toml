@@ -1,7 +1,14 @@
 [package]
-name = "type_enum"
+name = "enum-typer"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["DexerMatters"]
+license = "MIT OR Apache-2.0"
+description = "Type-indexed enums and GADTs for Rust via procedural macros"
+readme = "README.md"
+repository = "https://github.com/DexerMatters/enum-typer"
+keywords = ["gadt", "type-indexing", "proc-macro", "pattern-matching", "trait-objects"]
+categories = ["rust-patterns", "encoding"]
 
 [lib]
 proc-macro = true

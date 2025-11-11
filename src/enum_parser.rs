@@ -16,22 +16,18 @@ pub struct ParsedVariant {
 
 /// A single method arm (pattern => body)
 pub struct MethodArm {
-    #[allow(dead_code)]
     pub pattern: TokenStream2,
-    #[allow(dead_code)]
     pub body: TokenStream2,
 }
 
 /// Parsed method with signature and pattern/body arms
 pub struct ParsedMethod {
-    #[allow(dead_code)]
     pub sig: TokenStream2,
-    #[allow(dead_code)]
     pub arms: Vec<MethodArm>,
 }
 
-#[allow(dead_code)]
 pub struct ParsedEnum {
+    #[allow(dead_code)]
     pub attrs: Vec<Attribute>,
     pub vis: Visibility,
     pub ident: Ident,
