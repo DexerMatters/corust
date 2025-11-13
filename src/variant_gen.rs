@@ -1,13 +1,17 @@
 //! Variant struct and implementation code generation
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{ToTokens, quote};
+use quote::{quote, ToTokens};
 use std::collections::HashSet;
 use syn::{Fields, Generics, Ident, Visibility};
 
 use crate::enum_parser::{ParsedMethod, ParsedVariant};
-use crate::helpers::{build_variant_generics, strip_pattern_generics, substitute_type_params};
-use crate::type_analysis::{collect_variant_type_params, extract_trait_type_from_attrs};
+use crate::helpers::{
+    add_static_bounds, merge_generics, strip_pattern_generics, substitute_type_params,
+};
+use crate::type_analysis::{
+    collect_all_type_param_names, collect_variant_type_params, extract_trait_type_from_attrs,
+};
 
 /// Extract type parameters used in a trait type (e.g., "Term<bool>" -> {}, "Term<T>" -> {"T"})
 fn extract_type_params_from_trait(
@@ -127,49 +131,16 @@ pub fn generate_method_body(
 pub fn generate_combined_trait_impl(
     variant: &ParsedVariant,
     methods: &[ParsedMethod],
-    generics_with_static: &Generics,
+    impl_generics: &Generics,
     variant_ty_generics: &TokenStream2,
     where_clause: &TokenStream2,
     trait_type: &TokenStream2,
     all_type_params_ordered: &[String],
-    all_type_params: &HashSet<String>,
 ) -> TokenStream2 {
     let variant_name = &variant.ident;
 
-    // Extract which type params are used in the trait type
-    let trait_type_params = extract_type_params_from_trait(trait_type, all_type_params);
-
-    // Also extract which type params are used in the variant's type generics (struct params)
-    let variant_type_params = extract_type_params_from_trait(variant_ty_generics, all_type_params);
-
-    // Combine both sets - impl needs params used in EITHER the trait type OR the variant type
-    let mut used_params = trait_type_params;
-    used_params.extend(variant_type_params);
-
-    // Build filtered impl generics with only the type params actually used
-    let filtered_impl_generics = if used_params.is_empty() {
-        quote! {}
-    } else {
-        // Build new generics with only used params, preserving their bounds
-        let params: Vec<_> = generics_with_static
-            .type_params()
-            .filter(|tp| {
-                let param_name = tp.ident.to_string();
-                used_params.contains(&param_name)
-            })
-            .map(|tp| {
-                let ident = &tp.ident;
-                let bounds = &tp.bounds;
-                quote! { #ident: #bounds }
-            })
-            .collect();
-
-        if params.is_empty() {
-            quote! {}
-        } else {
-            quote! { <#(#params),*> }
-        }
-    };
+    // Build impl generics token stream
+    let (impl_generics_tokens, _, _) = impl_generics.split_for_impl();
 
     let method_impls: Vec<_> = methods
         .iter()
@@ -187,12 +158,12 @@ pub fn generate_combined_trait_impl(
 
     if method_impls.is_empty() {
         quote! {
-            impl #filtered_impl_generics #trait_type
+            impl #impl_generics_tokens #trait_type
                 for #variant_name #variant_ty_generics #where_clause {}
         }
     } else {
         quote! {
-            impl #filtered_impl_generics #trait_type
+            impl #impl_generics_tokens #trait_type
                 for #variant_name #variant_ty_generics #where_clause {
                 #(#method_impls)*
             }
@@ -212,58 +183,66 @@ pub fn generate_variant_code(
 ) -> TokenStream2 {
     let variant_name = &variant.ident;
 
+    // Add 'static bounds to variant generics
+    let variant_generics_with_static = add_static_bounds(&variant.generics);
+
+    // Collect all available type params (variant-level + enum-level)
+    let mut combined_type_params = collect_all_type_param_names(&variant_generics_with_static);
+    combined_type_params.extend(all_type_params.iter().cloned());
+
     // Collect type parameters used in variant fields (for struct definition)
-    let struct_type_params = collect_variant_type_params(&variant.fields, all_type_params);
+    let struct_type_params = collect_variant_type_params(&variant.fields, &combined_type_params);
 
-    // Build variant-specific generics for the struct
-    let variant_generics = build_variant_generics(generics_with_static, &struct_type_params);
-    let (_variant_impl_generics, variant_ty_generics, _variant_where_clause) =
-        variant_generics.split_for_impl();
+    // Build merged generics for the struct: variant generics + ONLY used enum generics
+    let struct_generics = merge_generics(
+        &variant_generics_with_static,
+        generics_with_static,
+        &struct_type_params,
+    );
 
-    // Generate struct definition
-    let struct_def = generate_variant_struct(variant_name, &variant_generics, &variant.fields, vis);
+    let (_struct_impl_generics, variant_ty_generics, _struct_where_clause) =
+        struct_generics.split_for_impl();
 
-    // Generate trait implementation (uses full generics from enum)
-    let (_impl_generics_static, _, where_clause_static) = generics_with_static.split_for_impl();
-    let trait_impl = if let Some(ref trait_type) = variant.trait_type {
-        // Generate combined trait impl with all methods
-        generate_combined_trait_impl(
-            variant,
-            methods,
-            generics_with_static,
-            &variant_ty_generics.to_token_stream(),
-            &where_clause_static.to_token_stream(),
-            trait_type,
-            all_type_params_ordered,
-            all_type_params,
-        )
-    } else if let Some(trait_type) = extract_trait_type_from_attrs(&variant.attrs) {
-        // Use custom attribute #[impl_trait(...)]
-        generate_combined_trait_impl(
-            variant,
-            methods,
-            generics_with_static,
-            &variant_ty_generics.to_token_stream(),
-            &where_clause_static.to_token_stream(),
-            &trait_type,
-            all_type_params_ordered,
-            all_type_params,
-        )
+    // Generate struct definition using struct-specific generics
+    let struct_def = generate_variant_struct(variant_name, &struct_generics, &variant.fields, vis);
+
+    // For impl block, we need ALL type params from BOTH the struct AND the trait type
+    // Determine trait type first
+    let trait_type = if let Some(ref tt) = variant.trait_type {
+        tt.clone()
+    } else if let Some(tt) = extract_trait_type_from_attrs(&variant.attrs) {
+        tt
     } else {
-        // Default: implement the base trait
         let ty_generics = generics_with_static.split_for_impl().1;
-        let default_trait_type = quote! { #enum_name #ty_generics };
-        generate_combined_trait_impl(
-            variant,
-            methods,
-            generics_with_static,
-            &variant_ty_generics.to_token_stream(),
-            &where_clause_static.to_token_stream(),
-            &default_trait_type,
-            all_type_params_ordered,
-            all_type_params,
-        )
+        quote! { #enum_name #ty_generics }
     };
+
+    // Extract type params used in trait type
+    let trait_type_params = extract_type_params_from_trait(&trait_type, all_type_params);
+
+    // Combine struct params and trait params for impl
+    let mut impl_type_params = struct_type_params.clone();
+    impl_type_params.extend(trait_type_params);
+
+    // Build impl generics: variant generics + ALL enum generics used in struct OR trait type
+    let impl_generics = merge_generics(
+        &variant_generics_with_static,
+        generics_with_static,
+        &impl_type_params,
+    );
+
+    let (_impl_generics_tokens, _, where_clause_impl) = impl_generics.split_for_impl();
+
+    // Generate trait implementation
+    let trait_impl = generate_combined_trait_impl(
+        variant,
+        methods,
+        &impl_generics,
+        &variant_ty_generics.to_token_stream(),
+        &where_clause_impl.to_token_stream(),
+        &trait_type,
+        all_type_params_ordered,
+    );
 
     quote! {
         #struct_def

@@ -2,14 +2,15 @@
 
 use proc_macro2::{Ident, TokenStream as TokenStream2, TokenTree};
 use syn::{
-    Attribute, Fields, Generics, Token, Visibility,
     parse::{Parse, ParseStream},
+    Attribute, Fields, Generics, Token, Visibility,
 };
 
 /// Parsed variant with optional trait type constraint
 pub struct ParsedVariant {
     pub attrs: Vec<Attribute>,
     pub ident: Ident,
+    pub generics: Generics,
     pub fields: Fields,
     pub trait_type: Option<TokenStream2>,
 }
@@ -63,6 +64,9 @@ impl Parse for ParsedEnum {
             let variant_attrs = content.call(Attribute::parse_outer)?;
             let variant_ident: Ident = content.parse()?;
 
+            // Parse variant-level generics (e.g., A<T>, B<U: Trait>)
+            let variant_generics: Generics = content.parse()?;
+
             // Parse fields
             let fields = if content.peek(syn::token::Brace) {
                 Fields::Named(content.parse()?)
@@ -107,6 +111,7 @@ impl Parse for ParsedEnum {
             variants.push(ParsedVariant {
                 attrs: variant_attrs,
                 ident: variant_ident,
+                generics: variant_generics,
                 fields,
                 trait_type,
             });

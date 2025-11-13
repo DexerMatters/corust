@@ -149,3 +149,48 @@ fn test_safe_list() {
     let head = safe_head(list);
     assert_eq!(head, 1);
 }
+
+#[test]
+fn test_field_generics() {
+    type_enum! {
+        enum Nat {
+            Zero,
+            Succ<N: Nat>(N) : Nat,
+        }
+
+        fn to_u32(&self) -> u32 {
+            Zero => 0,
+            Succ<N: Nat>(n) => 1 + n.to_u32(),
+        }
+    }
+
+    let three = Succ(Succ(Succ(Zero)));
+    assert_eq!(three.to_u32(), 3);
+}
+
+#[test]
+fn test_field_generics_arith() {
+    type_enum! {
+        enum Arith<T> {
+            Num(i32) : Arith<i32>,
+            Bool(bool) : Arith<bool>,
+            Add<A: Arith<i32>, B: Arith<i32>>(A, B) : Arith<i32>,
+            Or<A: Arith<bool>, B: Arith<bool>>(A, B) : Arith<bool>,
+        }
+
+        fn eval(&self) -> T {
+            Num(i) => *i,
+            Bool(b) => *b,
+            Add<A, B>(a, b) => a.eval() + b.eval(),
+            Or<A, B>(a, b) => a.eval() || b.eval(),
+        }
+    }
+
+    let expr = Add(Num(10), Add(Num(20), Num(5)));
+
+    let expr2 = Or(Bool(false), Or(Bool(true), Bool(false)));
+
+    assert_eq!(expr.eval(), 35);
+
+    assert_eq!(expr2.eval(), true);
+}

@@ -16,6 +16,7 @@ A procedural macro library that brings Generalized Algebraic Data Types (GADTs) 
 - 📦 **Trait Objects** - Automatic trait generation with `Box<dyn Trait>` support for existential types
 - 🔄 **Pattern Matching** - Runtime type-based matching with `match_t!` macro
 - 🎨 **Methods** - Define methods directly in the enum with type-indexed return types
+- 🧬 **Variant Generics** - Each variant can have its own generic parameters with trait bounds
 - ⚡ **Smart Inference** - Automatic type parameter filtering and PhantomData injection
 
 ## Quick Start
@@ -203,6 +204,43 @@ Notice how `Nil` only has `impl<T>`, not `impl<T, E>` - the macro automatically 
 
 ## Advanced Features
 
+### Variant-Level Generics
+
+Variants can have their own generic parameters, independent of the enum's generics:
+
+```rust
+type_enum! {
+    enum Container {
+        Simple<T>(T) : Container,
+        Nested<U: Container>(Box<U>) : Container,
+    }
+}
+
+// Each variant is a struct with its own generics:
+// struct Simple<T: 'static>(T);
+// struct Nested<U: Container + 'static>(Box<U>);
+
+let value: Box<dyn Container> = Box::new(Simple(42));
+let nested: Box<dyn Container> = Box::new(Nested(value));
+```
+
+This enables:
+- **Self-referential types**: Variants can reference the enum trait itself with different type parameters
+- **Per-variant constraints**: Each variant can have its own trait bounds (e.g., `U: Container`)
+- **Flexible composition**: Build complex recursive structures without cluttering the main enum signature
+
+```rust
+type_enum! {
+    enum Expression {
+        Value<T>(T) : Expression,
+        Lambda<F: Fn(i32) -> i32>(F) : Expression,
+    }
+}
+
+let val = Box::new(Value(42));
+let func = Box::new(Lambda(|x| x * 2));
+```
+
 ### Trait Bounds Preservation
 
 Type parameter bounds are automatically preserved:
@@ -226,7 +264,6 @@ type_enum! {
 ## Limitations
 
 - **Inference limits**: Associated types like `N::Pred` may require explicit type annotations
-- **No variant with type parameters**: Variants cannot have their own type parameters
 - **'static bound**: All type parameters require `'static` for trait object compatibility
 - **No exhaustiveness**: `match_t!` panics on unmatched patterns (no compile-time exhaustiveness checking)
 
@@ -237,6 +274,7 @@ See the `tests/examples.rs` file for more examples including:
 - Empty/non-empty lists with compile-time guarantees
 - Length-indexed vectors with type-level naturals
 - Sum types with generic folding
+- Variants with their own generic parameters and trait bounds
 
 ## License
 

@@ -78,3 +78,11 @@ pub fn collect_variant_type_params(
 
     used_params
 }
+
+/// Collect all type parameter names from generics (variant-level or enum-level)
+pub fn collect_all_type_param_names(generics: &syn::Generics) -> HashSet<String> {
+    generics
+        .type_params()
+        .map(|tp| tp.ident.to_string())
+        .collect()
+}

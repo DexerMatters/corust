@@ -128,20 +128,35 @@ pub fn substitute_type_params(
     result
 }
 
-/// Build variant-specific generics containing only used type parameters
-pub fn build_variant_generics(
-    generics_with_static: &Generics,
-    used_params: &HashSet<String>,
+/// Merge variant-level generics with enum-level generics
+/// Variant-level generics take precedence and are placed first
+pub fn merge_generics(
+    variant_generics: &Generics,
+    enum_generics: &Generics,
+    used_enum_params: &HashSet<String>,
 ) -> Generics {
-    let mut variant_generics = generics_with_static.clone();
-    variant_generics.params = variant_generics
-        .params
-        .iter()
-        .filter(|param| match param {
-            GenericParam::Type(t) => used_params.contains(&t.ident.to_string()),
-            _ => true, // Keep lifetime and const parameters
-        })
-        .cloned()
+    let mut merged = variant_generics.clone();
+
+    // Get names of variant-level type params to avoid duplicates
+    let variant_param_names: HashSet<String> = variant_generics
+        .type_params()
+        .map(|tp| tp.ident.to_string())
         .collect();
-    variant_generics
+
+    // Add enum-level params that are used and not already in variant params
+    for param in enum_generics.params.iter() {
+        match param {
+            GenericParam::Type(t) => {
+                let param_name = t.ident.to_string();
+                if used_enum_params.contains(&param_name)
+                    && !variant_param_names.contains(&param_name)
+                {
+                    merged.params.push(param.clone());
+                }
+            }
+            _ => {} // Skip lifetime and const parameters for now
+        }
+    }
+
+    merged
 }
